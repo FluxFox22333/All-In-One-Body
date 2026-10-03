@@ -7,7 +7,8 @@ def code(name):
 checks={
  'net.minecraft.client.gui.Hud':['void extractHotbar(', 'void extractItemHotbar(', 'void extractHealthLevel(', 'void extractArmorLevel(', 'void extractFoodLevel(', 'void extractAirLevel(', 'void extractContextualInfoBarBackground(', 'void extractContextualInfoBar(', 'void extractExperienceLevel(', 'void maybeExtractSpectatorTooltip(', 'net/minecraft/client/player/LocalPlayer.getActiveEffects:()Ljava/util/Collection;'],
  'net.minecraft.client.gui.screens.inventory.MerchantScreen':['private int shopItem;', 'private int scrollOff;'],
- 'net.minecraft.client.renderer.extract.LevelExtractor':['void extractPlayerState(net.minecraft.client.Camera, net.minecraft.client.DeltaTracker, float, net.minecraft.client.renderer.state.level.PlayerRenderState);', 'net.minecraft.client.renderer.entity.state.EntityRenderState extractEntity(net.minecraft.world.entity.Entity, float);'],
+ 'net.minecraft.client.renderer.entity.EntityRenderDispatcher':['net.minecraft.client.renderer.entity.state.EntityRenderState extractEntity(E, float);'],
+ 'net.minecraft.client.renderer.state.level.CameraRenderState':['public boolean isFirstPerson;', 'public float cameraEntityPartialTicks;'],
  'net.minecraft.client.renderer.GameRenderer':['void renderItemInHand(net.minecraft.client.renderer.state.level.CameraRenderState, net.minecraft.client.renderer.state.level.PlayerRenderState, com.mojang.renderpearl.api.textures.GpuTextureView);', 'net/minecraft/client/multiplayer/MultiPlayerGameMode.getPlayerMode:()Lnet/minecraft/world/level/GameType;'],
  'net.minecraft.client.renderer.state.level.PlayerRenderState':['void reset();'],
 }

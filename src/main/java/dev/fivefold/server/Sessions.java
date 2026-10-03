@@ -65,6 +65,7 @@ public final class Sessions {
      if(o.has("bindings")){
       var labels=o.getAsJsonArray("bindings");if(labels.size()==Action.values().length){var list=new ArrayList<String>();for(var label:labels){String text=label.getAsString().replaceAll("[\\p{Cntrl}§]","");list.add(text.substring(0,Math.min(24,text.length())));}r.bindings.put(p.getUUID(),List.copyOf(list));}
      }
+     long taskBefore=r.tasks.id();
      if(o.has("challengeHeld")&&o.has("task")){r.tasks.input(p.getUUID(),o.get("task").getAsLong(),o.get("challengeHeld").getAsInt());TaskRewards.drain(r);}
      int beforeOther=r.frames.heldExcept(clock,r.permissions,r.body);
      int before=combined(r);boolean wasOpen=r.open;
@@ -79,7 +80,7 @@ public final class Sessions {
       if((pressed&Action.USE.bit())!=0&&point!=null)click(r,body,1,point);
      }
      if(InputMixer.needsRelay(before,combined(r),beforeOther,r.frames.heldExcept(clock,r.permissions,r.body))||pressed!=0||wasOpen!=r.open)sendFrame(r,body);
-     if(wasOpen!=r.open||pressed!=0&&(r.open||wasOpen||(pressed&Action.DROP.bit())!=0))state(r);
+     if(taskBefore!=r.tasks.id()||wasOpen!=r.open||pressed!=0&&(r.open||wasOpen||(pressed&Action.DROP.bit())!=0))state(r);
     }
     case "look" -> {
      if(!active(r)||!r.open||!r.permissions.owns(p.getUUID(),Action.LOOK)||!menuMatches(r,o))return;

@@ -42,7 +42,7 @@ public final class TeamInputHud {
  public static void render(GuiGraphicsExtractor g,int width,int height,int ownPanelBottom){
   if(!ClientState.linked())return;
   int panelWidth=Math.min(270,width-16),x=width>=700?width-panelWidth-6:6,y=width>=700?58:ownPanelBottom+6;
-  renderAt(g,x,y,panelWidth,Math.max(12,height-y-48),false);
+  renderAt(g,x,y,panelWidth,Math.max(12,Math.min(80,height-y-48)),false);
  }
  public static void renderInScreen(GuiGraphicsExtractor g,int width,int top){
   if(!ClientState.linked())return;
@@ -53,7 +53,7 @@ public final class TeamInputHud {
   var mc=ClientState.mc();var rows=rows(width-10,compact);int header=compact?0:14;int capacity=Math.max(1,(maxHeight-header)/11);
   pages=Math.max(1,(rows.size()+capacity-1)/capacity);page=Math.min(page,pages-1);
   int start=page*capacity,end=Math.min(rows.size(),start+capacity);
-  g.fill(x,y,x+width,y+header+(end-start)*11,0xb8101c29);
+  g.fill(x,y,x+width,y+header+(end-start)*11,0x70101c29);
   String title="全队按键 · 点号=刚操作"+(pages>1?" · F9 "+(page+1)+"/"+pages:"");
   if(!compact)g.text(mc.font,mc.font.plainSubstrByWidth(title,width-10),x+5,y+2,0xffcee5f4);
   for(int i=start;i<end;i++)g.text(mc.font,rows.get(i).text(),x+5,y+header+(i-start)*11,rows.get(i).color());

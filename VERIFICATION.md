@@ -1,4 +1,45 @@
-# Fivefold 0.5.0-alpha verification
+# Fivefold 0.5.1-alpha verification
+
+Target: Minecraft 26.3, NeoForge 26.3.0.39-beta, Java 25; protocol remains 10.
+On 2026-10-03, all production sources compiled against the exact patched target API
+using tools/build_cached.py and the available dependency cache. All 103
+JUnit tests passed (including four new task scheduling regressions). The updated tools/check_mixin_targets.py passed 19 static checks.
+The build produced build/libs/fivefold-0.5.1-alpha.jar.
+
+Hand repair attempt:
+- Replace the LevelExtractor tail hook with a GameRenderer.renderItemInHand HEAD hook.
+  It rebuilds the controlled body's avatar, equipment and use state immediately before
+  the scoped spectator-mode gate. The local follower's spectator avatar is replaced.
+- Hand selection for bows/crossbows now reads the same explicit equipment/use snapshot
+  as the item models, rather than a potentially lagging remote entity state.
+- The marker is cleared at each render call and on state reset; only an alive, awake
+  shared body viewed in first person qualifies. Personal inventory is not overwritten.
+- The scoped redirect still permits native hands for linked followers only. F1,
+  third-person and normal spectator behavior retain vanilla rendering gates.
+
+Overlay changes:
+- Default compact overlay contains at most three 11-pixel rows, at most 260 GUI pixels
+  wide, with a translucent background sized to each line.
+- F7 cycles compact/detailed/hidden. F9 opens details or advances the team input page.
+- Detailed team input list is capped at 80 GUI pixels in height and paged.
+- Overlay respects the native Hud.isHidden() setting.
+
+Task scheduling:
+- Full success settles and starts the next task in the same input call. A changed task
+  ID triggers an immediate room-state broadcast, including the new 300-tick deadline.
+- Partial results still settle at the existing deadline; owner rotation, score pools,
+  penalties and paused game-time behavior are retained.
+- Tests cover immediate rollover, a fresh 15-second timeout, unchanged unfinished task
+  timing, stale packet rejection, held-key protection, owner rotation and pause.
+
+No game launch, runtime Mixin transformation, multiplayer visual verification or
+screenshot QA was performed. Existing JUnit tests cover core behavior, not the renderer.
+The hand change is a repair attempt requiring in-game confirmation; static targets and
+compilation cannot establish that the reported missing-hand symptom is resolved.
+See docs/versions/Fivefold-0.5.1-说明.md for the targeted retest sequence.
+
+## Historical 0.5.0 verification
+
 
 Target: Minecraft 26.3, NeoForge 26.3.0.39-beta, Java 25; protocol 10.
 All production sources compiled against the exact patched target API.

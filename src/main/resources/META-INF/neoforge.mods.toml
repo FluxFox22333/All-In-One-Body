@@ -3,7 +3,7 @@ loaderVersion="[12,)"
 license="MIT"
 [[mods]]
 modId="fivefold"
-version="0.5.0-alpha"
+version="0.5.1-alpha"
 displayName="Fivefold · 多人一体"
 description='''2至32人共享一个身体，独立分配移动、鼠标和辅助操作。'''
 [[dependencies.fivefold]]

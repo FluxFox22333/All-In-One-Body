@@ -84,7 +84,8 @@ public final class ClientState {
  public static boolean key(int action,KeyEvent event){
   if(mc().player!=null&&event.key()==InputConstants.KEY_F8){if(action==InputConstants.PRESS){physical=challengeHeld=0;if(linked())sendInput();mc().gui.setScreen(new SettingsScreen(mc().gui.screen()));}return true;}
   if(!linked())return false;
-  if(event.key()==InputConstants.KEY_F9){if(action==InputConstants.PRESS)TeamInputHud.nextPage();return true;}
+  if(event.key()==InputConstants.KEY_F7){if(action==InputConstants.PRESS)OverlayHud.cycle();return true;}
+  if(event.key()==InputConstants.KEY_F9){if(action==InputConstants.PRESS){if(OverlayHud.detailed()||mc().gui.screen()!=null)TeamInputHud.nextPage();else OverlayHud.showDetails();}return true;}
   if(gameContext()&&mc().options.keyAdvancements.matches(event)){
    if(action==InputConstants.PRESS){physical=challengeHeld=0;sendInput();mc().gui.setScreen(new AdvancementsScreen(mc().getConnection().getAdvancements()));applyMovement();}
    return true;
@@ -210,12 +211,13 @@ public final class ClientState {
  }
  public static void opening(ScreenEvent.Opening e){if(linked()&&e.getNewScreen() instanceof AbstractContainerScreen<?>)e.setNewScreen(new SharedScreen());}
  public static void hud(RenderGuiEvent.Post e){
-  if(!linked()||mc().gui.screen()!=null)return;var g=e.getGuiGraphics();int h=mc().getWindow().getGuiScaledHeight(),w=mc().getWindow().getGuiScaledWidth();
-  int panelWidth=Math.min(390,w-16);var lines=ControlLabels.hudLines(mask(),panelWidth-12);
+  if(!linked()||mc().gui.screen()!=null||mc().gui.hud.isHidden()||OverlayHud.hidden())return;var g=e.getGuiGraphics();int h=mc().getWindow().getGuiScaledHeight(),w=mc().getWindow().getGuiScaledWidth();
+  if(!OverlayHud.detailed()){OverlayHud.compact(g,w);return;}
+  int panelWidth=Math.min(300,w-16);var lines=ControlLabels.hudLines(mask(),panelWidth-12);
   int panelBottom=37+lines.size()*12;
-  g.fill(4,4,4+panelWidth,panelBottom,0xdc101c29);
+  g.fill(4,4,4+panelWidth,panelBottom,0x80101c29);
   g.text(mc().font,"共控 "+state.get("code").getAsString()+" · 我的操作",10,9,0xff8de2c2);
-  g.text(mc().font,"F8分工 · F10菜单 · "+mc().options.keyAdvancements.getTranslatedKeyMessage().getString()+"进度",10,21,0xffb8c7d8);
+  g.text(mc().font,"F7收起 · F8分工 · F10菜单 · "+mc().options.keyAdvancements.getTranslatedKeyMessage().getString()+"进度",10,21,0xffb8c7d8);
   int lineY=35;for(String line:lines){g.text(mc().font,line,10,lineY,0xffe7f0ff);lineY+=12;}
   if(!state.get("active").getAsBoolean())g.text(mc().font,"分工不完整，身体操作已停止",10,panelBottom+4,0xffffbb66);
   int taskBottom=TaskHud.render(g,w,panelBottom+(state.get("active").getAsBoolean()?4:16));

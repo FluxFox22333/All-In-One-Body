@@ -1,5 +1,5 @@
 package dev.fivefold.client;
-import net.minecraft.client.Camera;
+import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.renderer.entity.state.AvatarRenderState;
 import net.minecraft.client.renderer.state.level.PlayerRenderState;
@@ -12,20 +12,20 @@ import net.minecraft.world.item.*;
 
 /** Extract the body's native equipment/skin into the first-person render state without modifying inventories. */
 public final class SharedHands {
- public static AbstractClientPlayer subject(Camera camera){
+ public static AbstractClientPlayer subject(){
   if(!ClientState.linked()||ClientState.body()||!ClientState.mc().options.getCameraType().isFirstPerson())return null;
-  if(camera.entity() instanceof AbstractClientPlayer player&&player.getId()==ClientState.state.get("entity").getAsInt()&&ClientState.state.has("equipmentOffset")&&ClientState.items.size()>ClientState.state.get("equipmentOffset").getAsInt()+1&&player.isAlive()&&!player.isSleeping())return player;
+  if(ClientState.mc().getCameraEntity() instanceof AbstractClientPlayer player&&player.getId()==ClientState.state.get("entity").getAsInt()&&ClientState.state.has("equipmentOffset")&&ClientState.items.size()>ClientState.state.get("equipmentOffset").getAsInt()+1&&player.isAlive()&&!player.isSleeping())return player;
   return null;
  }
- public static void extract(AbstractClientPlayer body,Camera camera,AvatarRenderState avatar,PlayerRenderState state){
+ public static void extract(AbstractClientPlayer body,CameraRenderState camera,AvatarRenderState avatar,PlayerRenderState state){
   var mc=ClientState.mc();var hands=state.firstPersonHandsAndItems;
   state.avatarRenderState=avatar;state.hasPlayer=true;
   var snapshot=ClientState.state;avatar.mainArm=HumanoidArm.valueOf(snapshot.get("mainArm").getAsString());avatar.isUsingItem=snapshot.get("usingItem").getAsBoolean();avatar.useItemHand=InteractionHand.valueOf(snapshot.get("useHand").getAsString());
   var swing=body.getCurrentSwing();hands.attackHand=swing==null?InteractionHand.MAIN_HAND:swing.hand();
-  hands.viewXRot=camera.xRot();hands.viewYRot=camera.yRot();hands.xBob=hands.viewXRot;hands.yBob=hands.viewYRot;
+  hands.viewXRot=camera.xRot;hands.viewYRot=camera.yRot;hands.xBob=hands.viewXRot;hands.yBob=hands.viewYRot;
   hands.isScoping=snapshot.get("scoping").getAsBoolean();hands.useItemRemainingTicks=snapshot.get("useRemaining").getAsInt();
   int offset=snapshot.get("equipmentOffset").getAsInt();hands.mainHandItem=ClientState.items.get(offset).copy();hands.offHandItem=ClientState.items.get(offset+1).copy();
-  hands.handRenderSelection=selection(body);
+  hands.handRenderSelection=selection(hands.mainHandItem,hands.offHandItem,avatar.isUsingItem,avatar.useItemHand);
   // The remote body has no LocalPlayer equip-height controller. Keep a fully raised native hand pose.
   hands.mainHandHeight=hands.oldMainHandHeight=hands.offHandHeight=hands.oldOffHandHeight=1;
   boolean right=avatar.mainArm==HumanoidArm.RIGHT;
@@ -46,11 +46,10 @@ public final class SharedHands {
   ClientState.mc().getMapRenderer().extractRenderState(id,data,state);return true;
  }
  private static boolean charged(ItemStack stack){return stack.is(Items.CROSSBOW)&&CrossbowItem.isCharged(stack);}
- private static HandRenderSelection selection(AbstractClientPlayer body){
-  var main=body.getMainHandItem();var off=body.getOffhandItem();
+ private static HandRenderSelection selection(ItemStack main,ItemStack off,boolean using,InteractionHand hand){
   if(!main.is(Items.BOW)&&!off.is(Items.BOW)&&!main.is(Items.CROSSBOW)&&!off.is(Items.CROSSBOW))return HandRenderSelection.RENDER_BOTH_HANDS;
-  if(!body.isUsingItem())return charged(main)?HandRenderSelection.RENDER_MAIN_HAND_ONLY:HandRenderSelection.RENDER_BOTH_HANDS;
-  var item=body.getUseItem();var hand=body.getUsedItemHand();
+  if(!using)return charged(main)?HandRenderSelection.RENDER_MAIN_HAND_ONLY:HandRenderSelection.RENDER_BOTH_HANDS;
+  var item=hand==InteractionHand.MAIN_HAND?main:off;
   if(item.is(Items.BOW)||item.is(Items.CROSSBOW))return HandRenderSelection.onlyForHand(hand);
   return hand==InteractionHand.MAIN_HAND&&charged(off)?HandRenderSelection.RENDER_MAIN_HAND_ONLY:HandRenderSelection.RENDER_BOTH_HANDS;
  }

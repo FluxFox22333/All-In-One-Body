@@ -43,7 +43,7 @@ public final class CooperationTasks {
   bits&=ELIGIBLE;int before=held.getOrDefault(player,0);held.put(player,bits);
   if(paused||done||owner==null||taskId!=id||time>=deadline||(bits&~before&action.bit())==0)return;
   responses.put(player,time);int count=current().size();if(responses.containsKey(owner)&&current().contains(owner))best=Math.max(best,count);
-  if(best==members.size())settle();
+  if(best==members.size()){settle();start();} // Full success starts a fresh 15-second round immediately.
  }
  public Set<UUID> current(){
   var current=new HashSet<UUID>();if(paused||done)return current;
