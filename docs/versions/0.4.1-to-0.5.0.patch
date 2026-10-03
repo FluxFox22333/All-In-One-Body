@@ -1,0 +1,684 @@
+--- a/build.gradle
++++ b/build.gradle
+@@ -2,7 +2,7 @@
+  id 'java-library'
+  id 'net.neoforged.moddev' version '2.0.148'
+ }
+-version = '0.4.1-alpha'
++version = '0.5.0-alpha'
+ group = 'dev.fivefold'
+ base { archivesName = 'fivefold' }
+ java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+--- a/src/main/java/dev/fivefold/Fivefold.java
++++ b/src/main/java/dev/fivefold/Fivefold.java
+@@ -12,7 +12,7 @@
+ @Mod("fivefold")
+ public final class Fivefold {
+  public Fivefold(IEventBus bus){
+-  bus.addListener((RegisterPayloadHandlersEvent e)->e.registrar("9").executesOn(HandlerThread.NETWORK).playBidirectional(Wire.TYPE,Wire.CODEC,(w,c)->{
++  bus.addListener((RegisterPayloadHandlersEvent e)->e.registrar("10").executesOn(HandlerThread.NETWORK).playBidirectional(Wire.TYPE,Wire.CODEC,(w,c)->{
+    if(!FastRelay.receive(c.connection(),w))c.enqueueWork(()->{if(c.player() instanceof ServerPlayer p)Sessions.receive(p,w);});
+   }));
+   NeoForge.EVENT_BUS.addListener(Sessions::tick);
+--- a/src/main/java/dev/fivefold/client/ClientState.java
++++ b/src/main/java/dev/fivefold/client/ClientState.java
+@@ -25,6 +25,8 @@
+ public final class ClientState {
+  public static JsonObject state;
+  public static List<ItemStack> items=List.of();
++ public static net.minecraft.world.item.trading.MerchantOffers offers;
++ static int challengeHeld;
+  public static String error="";
+  public static int physical,merged,attackClicks,useClicks;
+  static final RemoteMovement realtimeMovement=new RemoteMovement();
+@@ -51,7 +53,7 @@
+  public static void command(String command){send(Wire.message(command));}
+  public static void receive(Wire w){
+   var o=w.data();switch(o.get("kind").getAsString()){
+-   case "state" -> {state=o;items=w.items();physical&=mask();if(linked()){acceptView(o);acceptCursor(o,false);applyMovement();}else clearView();}
++   case "state" -> {state=o;items=w.items();offers=w.offers();SharedBody.apply();physical&=mask();if(linked()){acceptView(o);acceptCursor(o,false);applyMovement();}else clearView();}
+    case "error" -> error=o.get("text").getAsString();
+    case "left" -> {clearView();state=null;items=List.of();physical=merged=attackClicks=useClicks=0;KeyMapping.releaseAll();if(mc().player!=null)mc().setCameraEntity(mc().player);if(mc().gui.screen() instanceof SharedScreen)mc().gui.setScreen(null);}
+    case "frame" -> {if(!linked()||!body()||!o.get("room").getAsString().equals(state.get("code").getAsString()))return;otherHeld=o.get("otherHeld").getAsInt();frameRevision=o.get("revision").getAsLong();frameOpen=o.get("open").getAsBoolean();merged=o.get("held").getAsInt();attackClicks+=o.has("attackClicks")?o.get("attackClicks").getAsInt():0;useClicks+=o.has("useClicks")?o.get("useClicks").getAsInt():0;lastFrame=System.nanoTime();applyMovement();}
+@@ -71,21 +73,23 @@
+   m.put(Action.ATTACK,o.keyAttack);m.put(Action.USE,o.keyUse);m.put(Action.DROP,o.keyDrop);m.put(Action.INVENTORY,o.keyInventory);m.put(Action.SNEAK,o.keyShift);m.put(Action.SPRINT,o.keySprint);return m;
+  }
+  static void hold(Action a,boolean down){
+-  if((mask()&a.bit())==0)return;
+-  int before=physical;physical=down?physical|a.bit():physical&~a.bit();if(before!=physical){TeamInputHud.observeLocal();sendInput();applyMovement();}
++  int rawBefore=challengeHeld,before=physical;
++  if((dev.fivefold.core.CooperationTasks.ELIGIBLE&a.bit())!=0)challengeHeld=down?challengeHeld|a.bit():challengeHeld&~a.bit();
++  if((mask()&a.bit())!=0)physical=down?physical|a.bit():physical&~a.bit();
++  if(before!=physical||rawBefore!=challengeHeld){TeamInputHud.observeLocal();sendInput();applyMovement();}
+  }
+  static void sendInput(){var o=Wire.message("input");
+   var bindings=new JsonArray();for(Action a:Action.values())bindings.add(ControlLabels.key(a));String signature=bindings.toString();if(!signature.equals(sentBindings)){o.add("bindings",bindings);sentBindings=signature;}
+-  o.addProperty("held",physical);if(state!=null){o.addProperty("room",state.get("code").getAsString());o.addProperty("revision",state.get("revision").getAsLong());o.addProperty("epoch",viewEpoch);o.addProperty("menuEpoch",state.get("menuEpoch").getAsInt());if(drawnCursor!=null){o.addProperty("pointerFrom",drawnCursor.from());o.addProperty("pointerTo",drawnCursor.to());o.addProperty("pointerBlend",drawnCursor.blend());}}flushCursor(true);send(o);}
++  if(state!=null&&state.has("tradeScroll"))o.addProperty("tradeScroll",state.get("tradeScroll").getAsInt());o.addProperty("held",physical);o.addProperty("challengeHeld",challengeHeld);if(state!=null&&state.has("task"))o.addProperty("task",state.getAsJsonObject("task").get("id").getAsLong());if(state!=null){o.addProperty("room",state.get("code").getAsString());o.addProperty("revision",state.get("revision").getAsLong());o.addProperty("epoch",viewEpoch);o.addProperty("menuEpoch",state.get("menuEpoch").getAsInt());if(drawnCursor!=null){o.addProperty("pointerFrom",drawnCursor.from());o.addProperty("pointerTo",drawnCursor.to());o.addProperty("pointerBlend",drawnCursor.blend());}}flushCursor(true);send(o);}
+  public static boolean key(int action,KeyEvent event){
+-  if(mc().player!=null&&event.key()==InputConstants.KEY_F8){if(action==InputConstants.PRESS){physical=0;if(linked())sendInput();mc().gui.setScreen(new SettingsScreen(mc().gui.screen()));}return true;}
++  if(mc().player!=null&&event.key()==InputConstants.KEY_F8){if(action==InputConstants.PRESS){physical=challengeHeld=0;if(linked())sendInput();mc().gui.setScreen(new SettingsScreen(mc().gui.screen()));}return true;}
+   if(!linked())return false;
+   if(event.key()==InputConstants.KEY_F9){if(action==InputConstants.PRESS)TeamInputHud.nextPage();return true;}
+   if(gameContext()&&mc().options.keyAdvancements.matches(event)){
+-   if(action==InputConstants.PRESS){physical=0;sendInput();mc().gui.setScreen(new AdvancementsScreen(mc().getConnection().getAdvancements()));applyMovement();}
++   if(action==InputConstants.PRESS){physical=challengeHeld=0;sendInput();mc().gui.setScreen(new AdvancementsScreen(mc().getConnection().getAdvancements()));applyMovement();}
+    return true;
+   }
+-  if(event.key()==InputConstants.KEY_F10){if(action==InputConstants.PRESS){physical=0;sendInput();mc().gui.setScreen(new PauseScreen(true));}return true;}
++  if(event.key()==InputConstants.KEY_F10){if(action==InputConstants.PRESS){physical=challengeHeld=0;sendInput();mc().gui.setScreen(new PauseScreen(true));}return true;}
+   if(!gameContext())return false;
+   if(action!=InputConstants.PRESS&&action!=InputConstants.RELEASE)return true;
+   if(event.key()==InputConstants.KEY_ESCAPE){hold(Action.CLOSE,action==InputConstants.PRESS);return true;}
+@@ -101,9 +105,9 @@
+  public static boolean scroll(double delta){
+   if(!linked()||!gameContext())return false;
+   scrollRemainder+=delta;int d=(int)scrollRemainder;scrollRemainder-=d;
+-  if(d!=0&&(mask()&(d>0?Action.SCROLL_UP:Action.SCROLL_DOWN).bit())!=0){TeamInputHud.pulseLocal(d>0?Action.SCROLL_UP:Action.SCROLL_DOWN);var o=Wire.message("scroll");o.addProperty("direction",Integer.signum(d));send(o);}return true;
+- }
+- static void clearView(){TeamInputHud.reset();sentBindings="";realtimeMovement.reset();otherHeld=0;frameRevision=-1;frameOpen=true;lastFrame=0;viewReady=false;viewRoom="";viewEpoch=-1;lastLookSend=0;predictedLook.reset(0,0);cursorEpoch=-1;cursorSeq=cursorAck=0;cursorSerial=-1;cursorDirty=false;drawnCursor=null;}
++  if(d!=0&&(mask()&(d>0?Action.SCROLL_UP:Action.SCROLL_DOWN).bit())!=0){TeamInputHud.pulseLocal(d>0?Action.SCROLL_UP:Action.SCROLL_DOWN);var o=Wire.message("scroll");o.addProperty("room",state.get("code").getAsString());o.addProperty("menuEpoch",state.get("menuEpoch").getAsInt());o.addProperty("direction",Integer.signum(d));send(o);}return true;
++ }
++ static void clearView(){challengeHeld=0;offers=null;TeamInputHud.reset();sentBindings="";realtimeMovement.reset();otherHeld=0;frameRevision=-1;frameOpen=true;lastFrame=0;viewReady=false;viewRoom="";viewEpoch=-1;lastLookSend=0;predictedLook.reset(0,0);cursorEpoch=-1;cursorSeq=cursorAck=0;cursorSerial=-1;cursorDirty=false;drawnCursor=null;}
+  static void acceptView(JsonObject o){
+   String room=o.get("room").getAsString();int epoch=o.get("epoch").getAsInt();
+   if(viewReady&&room.equals(viewRoom)&&epoch<viewEpoch)return;
+@@ -180,9 +184,10 @@
+  public static void tick(ClientTickEvent.Pre e){
+   if(mc().player==null){clearView();state=null;items=List.of();physical=merged=0;return;}
+   if(!linked())return;
++  SharedBody.apply();
+   if(!body()&&mc().level!=null){var entity=mc().level.getEntity(state.get("entity").getAsInt());if(entity!=null&&mc().getCameraEntity()!=entity)mc().setCameraEntity(entity);}
+-  boolean context=gameContext();if(!context&&lastContext){physical=0;sendInput();}lastContext=context;
+-  if(!mc().isWindowActive())physical=0;
++  boolean context=gameContext();if(!context&&lastContext){physical=challengeHeld=0;sendInput();}lastContext=context;
++  if(!mc().isWindowActive())physical=challengeHeld=0;
+   TeamInputHud.observeLocal();
+   sendInput();
+   flushLook();flushCursor(false);applyView();
+@@ -213,12 +218,7 @@
+   g.text(mc().font,"F8分工 · F10菜单 · "+mc().options.keyAdvancements.getTranslatedKeyMessage().getString()+"进度",10,21,0xffb8c7d8);
+   int lineY=35;for(String line:lines){g.text(mc().font,line,10,lineY,0xffe7f0ff);lineY+=12;}
+   if(!state.get("active").getAsBoolean())g.text(mc().font,"分工不完整，身体操作已停止",10,panelBottom+4,0xffffbb66);
+-  TeamInputHud.render(g,w,h,panelBottom+(state.get("active").getAsBoolean()?0:12));
+-  if(!body()){
+-   int x=w/2-91,y=h-24;g.fill(x-3,y-15,x+185,h,0xd0101824);
+-   g.text(mc().font,"生命 "+(int)state.get("health").getAsFloat()+"  饥饿 "+state.get("food").getAsInt()+"  等级 "+state.get("xp").getAsInt(),x,y-12,0xffe7f0ff);
+-   for(int i=0;i<9&&i<items.size();i++){if(i==state.get("selected").getAsInt())g.fill(x+i*20-1,y-1,x+i*20+18,y+18,0xff487aa1);g.item(items.get(i),x+i*20,y);g.itemDecorations(mc().font,items.get(i),x+i*20,y);}
+-   g.text(mc().font,mc().font.plainSubstrByWidth(state.get("effects").getAsString(),panelWidth),8,panelBottom+(state.get("active").getAsBoolean()?4:16),0xffb6d7ef);
+-  }
++  int taskBottom=TaskHud.render(g,w,panelBottom+(state.get("active").getAsBoolean()?4:16));
++  TeamInputHud.render(g,w,h,taskBottom);
+  }
+ }
+--- a/src/main/java/dev/fivefold/client/SharedBody.java
++++ b/src/main/java/dev/fivefold/client/SharedBody.java
+@@ -0,0 +1,34 @@
++package dev.fivefold.client;
++import net.minecraft.client.player.AbstractClientPlayer;
++import net.minecraft.world.entity.EquipmentSlot;
++import net.minecraft.world.InteractionHand;
++
++/** Synchronize only the remote camera entity; never overwrite a spectator's personal inventory. */
++public final class SharedBody {
++ private static com.google.gson.JsonObject lastState;
++ private static AbstractClientPlayer lastEntity;
++ private static java.util.List<net.minecraft.world.effect.MobEffectInstance> effects=java.util.List.of();
++ public static java.util.Collection<net.minecraft.world.effect.MobEffectInstance> effects(){return effects;}
++ public static AbstractClientPlayer player(){
++  var mc=ClientState.mc();if(!ClientState.linked()||ClientState.body()||mc.level==null)return null;
++  var entity=mc.level.getEntity(ClientState.state.get("entity").getAsInt());return entity instanceof AbstractClientPlayer p?p:null;
++ }
++ public static boolean viewing(){var p=player();return p!=null&&ClientState.mc().getCameraEntity()==p;}
++ public static void apply(){
++  var body=player();if(body==null)return;var state=ClientState.state;var items=ClientState.items;
++  if(items.size()<9||!state.has("equipmentOffset"))return;
++  if(state==lastState&&body==lastEntity)return;lastState=state;lastEntity=body;
++  var next=new java.util.ArrayList<net.minecraft.world.effect.MobEffectInstance>();
++  for(var e:state.getAsJsonArray("effectList")){var o=e.getAsJsonObject();net.minecraft.core.registries.BuiltInRegistries.MOB_EFFECT.get(net.minecraft.resources.Identifier.parse(o.get("type").getAsString())).ifPresent(effect->next.add(new net.minecraft.world.effect.MobEffectInstance(effect,o.get("duration").getAsInt(),o.get("amplifier").getAsInt(),o.get("ambient").getAsBoolean(),o.get("visible").getAsBoolean(),o.get("icon").getAsBoolean())));}
++  effects=java.util.List.copyOf(next);
++  for(int i=0;i<9;i++)body.getInventory().setItem(i,items.get(i).copy());
++  body.getInventory().setSelectedSlot(Math.clamp(state.get("selected").getAsInt(),0,8));
++  int offset=state.get("equipmentOffset").getAsInt();if(items.size()>offset+1){body.setItemSlot(EquipmentSlot.MAINHAND,items.get(offset).copy());body.setItemSlot(EquipmentSlot.OFFHAND,items.get(offset+1).copy());}
++  body.setHealth(state.get("health").getAsFloat());body.getFoodData().setFoodLevel(state.get("food").getAsInt());body.setAirSupply(state.get("air").getAsInt());
++  body.experienceLevel=state.get("xp").getAsInt();body.experienceProgress=state.get("xpProgress").getAsFloat();
++  boolean using=state.get("usingItem").getAsBoolean();InteractionHand hand=InteractionHand.valueOf(state.get("useHand").getAsString());
++  if(using&&(!body.isUsingItem()||body.getUsedItemHand()!=hand))body.startUsingItem(hand);
++  else if(!using&&body.isUsingItem())body.stopUsingItem();
++ }
++ private SharedBody(){}
++}
+--- a/src/main/java/dev/fivefold/client/SharedHands.java
++++ b/src/main/java/dev/fivefold/client/SharedHands.java
+@@ -14,20 +14,21 @@
+ public final class SharedHands {
+  public static AbstractClientPlayer subject(Camera camera){
+   if(!ClientState.linked()||ClientState.body()||!ClientState.mc().options.getCameraType().isFirstPerson())return null;
+-  if(camera.entity() instanceof AbstractClientPlayer player&&player.getId()==ClientState.state.get("entity").getAsInt()&&player.isAlive()&&!player.isSleeping())return player;
++  if(camera.entity() instanceof AbstractClientPlayer player&&player.getId()==ClientState.state.get("entity").getAsInt()&&ClientState.state.has("equipmentOffset")&&ClientState.items.size()>ClientState.state.get("equipmentOffset").getAsInt()+1&&player.isAlive()&&!player.isSleeping())return player;
+   return null;
+  }
+  public static void extract(AbstractClientPlayer body,Camera camera,AvatarRenderState avatar,PlayerRenderState state){
+   var mc=ClientState.mc();var hands=state.firstPersonHandsAndItems;
+   state.avatarRenderState=avatar;state.hasPlayer=true;
++  var snapshot=ClientState.state;avatar.mainArm=HumanoidArm.valueOf(snapshot.get("mainArm").getAsString());avatar.isUsingItem=snapshot.get("usingItem").getAsBoolean();avatar.useItemHand=InteractionHand.valueOf(snapshot.get("useHand").getAsString());
+   var swing=body.getCurrentSwing();hands.attackHand=swing==null?InteractionHand.MAIN_HAND:swing.hand();
+   hands.viewXRot=camera.xRot();hands.viewYRot=camera.yRot();hands.xBob=hands.viewXRot;hands.yBob=hands.viewYRot;
+-  hands.isScoping=body.isScoping();hands.useItemRemainingTicks=body.getUseItemRemainingTicks();
+-  hands.mainHandItem=body.getMainHandItem().copy();hands.offHandItem=body.getOffhandItem().copy();
++  hands.isScoping=snapshot.get("scoping").getAsBoolean();hands.useItemRemainingTicks=snapshot.get("useRemaining").getAsInt();
++  int offset=snapshot.get("equipmentOffset").getAsInt();hands.mainHandItem=ClientState.items.get(offset).copy();hands.offHandItem=ClientState.items.get(offset+1).copy();
+   hands.handRenderSelection=selection(body);
+   // The remote body has no LocalPlayer equip-height controller. Keep a fully raised native hand pose.
+   hands.mainHandHeight=hands.oldMainHandHeight=hands.offHandHeight=hands.oldOffHandHeight=1;
+-  boolean right=body.getMainArm()==HumanoidArm.RIGHT;
++  boolean right=avatar.mainArm==HumanoidArm.RIGHT;
+   var main=right?ItemDisplayContext.FIRST_PERSON_RIGHT_HAND:ItemDisplayContext.FIRST_PERSON_LEFT_HAND;
+   var off=right?ItemDisplayContext.FIRST_PERSON_LEFT_HAND:ItemDisplayContext.FIRST_PERSON_RIGHT_HAND;
+   hands.mainHandRenderState.clear();hands.offHandRenderState.clear();
+--- a/src/main/java/dev/fivefold/client/SharedScreen.java
++++ b/src/main/java/dev/fivefold/client/SharedScreen.java
+@@ -15,7 +15,7 @@
+ /** Native screens render isolated client menus; only the shared server menu performs actions. */
+ public final class SharedScreen extends Screen {
+  public static boolean preparing;
+- private static final Set<String> NATIVE=Set.of("generic_9x1","generic_9x2","generic_9x3","generic_9x4","generic_9x5","generic_9x6","generic_3x3","hopper","shulker_box","crafting","furnace","blast_furnace","smoker","brewing_stand","grindstone","smithing","cartography_table");
++ private static final Set<String> NATIVE=Set.of("generic_9x1","generic_9x2","generic_9x3","generic_9x4","generic_9x5","generic_9x6","generic_3x3","hopper","shulker_box","crafting","furnace","blast_furnace","smoker","brewing_stand","grindstone","smithing","cartography_table","merchant");
+  private AbstractContainerScreen<?> nativeScreen;
+  private int epoch=-1;private Object renderedItems;
+  private double lastX=Double.NaN,lastY=Double.NaN;
+@@ -50,11 +50,16 @@
+   }
+   if(nativeScreen!=null&&renderedItems!=ClientState.items){
+    var menu=nativeScreen.getMenu();var items=ClientState.items;
++   if(menu instanceof net.minecraft.world.inventory.MerchantMenu merchant&&ClientState.offers!=null){
++    merchant.setOffers(ClientState.offers.copy());merchant.setMerchantLevel(state.get("tradeLevel").getAsInt());merchant.setXp(state.get("tradeXp").getAsInt());merchant.setShowProgressBar(state.get("tradeProgress").getAsBoolean());merchant.setCanRestock(state.get("tradeRestock").getAsBoolean());
++    int selected=Math.clamp(state.get("tradeSelection").getAsInt(),0,Math.max(0,merchant.getOffers().size()-1));merchant.setSelectionHint(selected);
++    var access=(dev.fivefold.mixin.MerchantScreenAccess)nativeScreen;access.fivefold$selection(selected);access.fivefold$scroll(Math.clamp(state.get("tradeScroll").getAsInt(),0,Math.max(0,merchant.getOffers().size()-7)));
++   }
+    if(items.size()>=10+menu.slots.size())menu.initializeContents(0,items.subList(9,9+menu.slots.size()).stream().map(net.minecraft.world.item.ItemStack::copy).toList(),items.get(9+menu.slots.size()).copy());
+    var data=state.getAsJsonArray("menuData");int count=((MenuAccess)menu).fivefold$data().size();for(int i=0;i<Math.min(count,data.size());i++)menu.setData(i,data.get(i).getAsInt());renderedItems=items;
+   }
+  }
+- private static String titleFor(String type){return switch(type){case "generic_9x6"->"container.chestDouble";case "generic_9x1","generic_9x2","generic_9x3","generic_9x4","generic_9x5"->"container.chest";case "generic_3x3"->"container.dispenser";case "shulker_box"->"container.shulkerBox";case "crafting"->"container.crafting";case "brewing_stand"->"container.brewing";case "cartography_table"->"container.cartography_table";case "smithing"->"container.upgrade";default->"container."+type;};}
++ private static String titleFor(String type){return switch(type){case "merchant"->"entity.minecraft.villager";case "generic_9x6"->"container.chestDouble";case "generic_9x1","generic_9x2","generic_9x3","generic_9x4","generic_9x5"->"container.chest";case "generic_3x3"->"container.dispenser";case "shulker_box"->"container.shulkerBox";case "crafting"->"container.crafting";case "brewing_stand"->"container.brewing";case "cartography_table"->"container.cartography_table";case "smithing"->"container.upgrade";default->"container."+type;};}
+  @Override public void extractRenderState(GuiGraphicsExtractor g,int mx,int my,float dt){
+   if(ClientState.state==null||!ClientState.sharedOpen())return;
+   updateMenu();
+--- a/src/main/java/dev/fivefold/client/TaskHud.java
++++ b/src/main/java/dev/fivefold/client/TaskHud.java
+@@ -0,0 +1,25 @@
++package dev.fivefold.client;
++import net.minecraft.client.gui.GuiGraphicsExtractor;
++import dev.fivefold.core.Action;
++import com.google.gson.*;
++import java.util.*;
++public final class TaskHud {
++ private static String name(String id){for(var e:ClientState.state.getAsJsonArray("people")){var p=e.getAsJsonObject();if(p.get("id").getAsString().equals(id))return p.get("name").getAsString();}return "—";}
++ public static int render(GuiGraphicsExtractor g,int width,int y){
++  if(!ClientState.state.has("task"))return y;
++  var t=ClientState.state.getAsJsonObject("task");var mc=ClientState.mc();int w=Math.min(390,width-16);int a=t.get("action").getAsInt();
++  var lines=new ArrayList<String>();boolean done=t.get("done").getAsBoolean(),paused=t.get("paused").getAsBoolean();
++  lines.add("协作任务 · "+(paused?"暂停（界面/身体不可用）":((t.get("remaining").getAsLong()+19)/20)+"秒")+" · 公共 "+(t.get("pool").getAsInt()/2.0)+"/4");
++  lines.add(a<0?"等待可用任务":name(t.get("owner").getAsString())+" · "+Action.values()[a].label+" ["+ControlLabels.key(Action.values()[a])+"]"+(done?" ✓":""));
++  lines.add(done?"已完成，等待下一轮":"3秒内各按一次 · 当前 "+t.getAsJsonArray("responses").size()+"/"+ClientState.state.getAsJsonArray("people").size()+" · 最佳 "+t.get("best").getAsInt());
++  var answered=new HashSet<String>();for(var e:t.getAsJsonArray("responses"))answered.add(e.getAsString());
++  StringBuilder response=new StringBuilder();for(var e:ClientState.state.getAsJsonArray("people")){var p=e.getAsJsonObject();if(!response.isEmpty())response.append("  ");response.append(answered.contains(p.get("id").getAsString())?"✓":"·").append(p.get("name").getAsString());}
++  if(!done)lines.add(response.toString());
++  StringBuilder top=new StringBuilder();for(var e:t.getAsJsonArray("leaders")){var p=e.getAsJsonObject();if(!top.isEmpty())top.append("、");top.append(name(p.get("id").getAsString())).append(' ').append(p.get("points").getAsInt());}
++  lines.add("我的惩罚 "+t.get("mine").getAsInt()+"/4 · 最高："+(top.isEmpty()?"无":top));
++  g.fill(4,y,4+w,y+lines.size()*12+6,0xd8101c29);
++  for(int i=0;i<lines.size();i++)g.text(mc.font,mc.font.plainSubstrByWidth(lines.get(i),w-12),10,y+3+i*12,i==1&&done?0xffff6666:0xffe5eaf5);
++  return y+lines.size()*12+6;
++ }
++ private TaskHud(){}
++}
+--- a/src/main/java/dev/fivefold/client/TeamInputHud.java
++++ b/src/main/java/dev/fivefold/client/TeamInputHud.java
+@@ -41,7 +41,7 @@
+  }
+  public static void render(GuiGraphicsExtractor g,int width,int height,int ownPanelBottom){
+   if(!ClientState.linked())return;
+-  int panelWidth=Math.min(270,width-16),x=width>=700?width-panelWidth-6:6,y=width>=700?6:ownPanelBottom+6;
++  int panelWidth=Math.min(270,width-16),x=width>=700?width-panelWidth-6:6,y=width>=700?58:ownPanelBottom+6;
+   renderAt(g,x,y,panelWidth,Math.max(12,height-y-48),false);
+  }
+  public static void renderInScreen(GuiGraphicsExtractor g,int width,int top){
+--- a/src/main/java/dev/fivefold/core/CooperationTasks.java
++++ b/src/main/java/dev/fivefold/core/CooperationTasks.java
+@@ -0,0 +1,69 @@
++package dev.fivefold.core;
++
++import java.util.*;
++
++/** Server-owned game-time clock. Raw challenge input never becomes body input. Points use half-units. */
++public final class CooperationTasks {
++ public static final int ELIGIBLE=Action.FORWARD.bit()|Action.BACK.bit()|Action.LEFT.bit()|Action.RIGHT.bit()|Action.JUMP.bit()|Action.ATTACK.bit()|Action.USE.bit()|Action.SPRINT.bit()|Action.SNEAK.bit();
++ public static final long ROUND=300,WINDOW=60; // 20 ticks per second
++ public record Outcome(UUID owner,int participants,int total,int rewardHalfPoints,boolean reward,boolean punishment){}
++ private final Random random;
++ private final Map<UUID,Integer> penalties=new HashMap<>(),held=new HashMap<>();
++ private final Map<UUID,Long> responses=new HashMap<>();
++ private final ArrayDeque<UUID> rotation=new ArrayDeque<>();
++ private Map<UUID,Integer> members=Map.of();
++ private final ArrayDeque<Outcome> outcomes=new ArrayDeque<>();
++ private long time,deadline,id;private UUID owner;private Action action;private int best,pool;private boolean done,paused=true;
++ public CooperationTasks(Random random){this.random=random;}
++ public void configure(Map<UUID,Integer> next){
++  if(members.equals(next))return;
++  if(members.keySet().equals(next.keySet())){members=Map.copyOf(next);return;} // A valid reassignment must not erase an ongoing result.
++  members=Map.copyOf(next);penalties.keySet().retainAll(next.keySet());held.keySet().retainAll(next.keySet());
++  rotation.clear();owner=null;responses.clear();done=false;best=0;id++;
++ }
++ public void tick(boolean enabled){
++  if(!enabled){paused=true;responses.clear();return;}
++  paused=false;
++  if(owner==null)start();
++  else if(time>=deadline){if(!done)settle();start();}
++  time++;
++ }
++ private void start(){
++  rotation.removeIf(player->(members.getOrDefault(player,0)&ELIGIBLE)==0);
++  if(rotation.isEmpty()){
++   var eligible=new ArrayList<UUID>();for(var e:members.entrySet())if((e.getValue()&ELIGIBLE)!=0)eligible.add(e.getKey());
++   Collections.shuffle(eligible,random);rotation.addAll(eligible);
++  }
++  if(rotation.isEmpty()){owner=null;action=null;return;}
++  owner=rotation.removeFirst();var actions=new ArrayList<Action>();for(var a:Action.values())if((members.get(owner)&ELIGIBLE&a.bit())!=0)actions.add(a);
++  action=actions.get(random.nextInt(actions.size()));id++;deadline=time+ROUND;responses.clear();best=0;done=false;
++ }
++ public void input(UUID player,long taskId,int bits){
++  if(!members.containsKey(player))return;
++  bits&=ELIGIBLE;int before=held.getOrDefault(player,0);held.put(player,bits);
++  if(paused||done||owner==null||taskId!=id||time>=deadline||(bits&~before&action.bit())==0)return;
++  responses.put(player,time);int count=current().size();if(responses.containsKey(owner)&&current().contains(owner))best=Math.max(best,count);
++  if(best==members.size())settle();
++ }
++ public Set<UUID> current(){
++  var current=new HashSet<UUID>();if(paused||done)return current;
++  for(var e:responses.entrySet())if(time-e.getValue()<=WINDOW)current.add(e.getKey());return Set.copyOf(current);
++ }
++ private void settle(){
++  done=true;int points=best==members.size()?2:best*4>=members.size()?1:0;
++  int penalty=penalties.getOrDefault(owner,0);if(points==0)penalty++;else if(points==2)penalty=Math.max(0,penalty-1);
++  boolean punishment=penalty>=4;if(punishment)penalty=Math.max(0,penalty-2);penalties.put(owner,penalty);
++  pool+=points;boolean reward=pool>=8;if(reward)pool=0;
++  outcomes.add(new Outcome(owner,best,members.size(),points,reward,punishment));
++ }
++ public Outcome poll(){return outcomes.poll();}
++ public long id(){return id;}public UUID owner(){return owner;}public Action action(){return action;}
++ public int best(){return best;}public boolean done(){return done;}public boolean paused(){return paused;}
++ public long remainingTicks(){return owner==null?ROUND:Math.max(0,deadline-time);}
++ public long windowRemainingTicks(){long remaining=0;for(UUID player:current())remaining=Math.max(remaining,WINDOW-(time-responses.get(player)));return Math.min(remaining,remainingTicks());}
++ public int poolHalfPoints(){return pool;}public int penalty(UUID player){return penalties.getOrDefault(player,0);}
++ public Map<UUID,Integer> leaders(){
++  int max=penalties.values().stream().mapToInt(Integer::intValue).max().orElse(0);if(max==0)return Map.of();
++  var top=new LinkedHashMap<UUID,Integer>();for(UUID p:members.keySet())if(penalty(p)==max)top.put(p,max);return Map.copyOf(top);
++ }
++}
+--- a/src/main/java/dev/fivefold/core/TradeLayout.java
++++ b/src/main/java/dev/fivefold/core/TradeLayout.java
+@@ -0,0 +1,7 @@
++package dev.fivefold.core;
++/** Matches vanilla MerchantScreen's seven offer buttons in panel-local coordinates. */
++public final class TradeLayout {
++ public static int offerAt(int x,int y,int scroll,int count){if(x<5||x>=93||y<18||y>=158)return -1;int index=scroll+(y-18)/20;return index>=0&&index<count?index:-1;}
++ public static int scrollAt(int y,int count){return Math.clamp(Math.round((y-18)/139f*Math.max(0,count-7)),0,Math.max(0,count-7));}
++ private TradeLayout(){}
++}
+--- a/src/main/java/dev/fivefold/mixin/MerchantScreenAccess.java
++++ b/src/main/java/dev/fivefold/mixin/MerchantScreenAccess.java
+@@ -0,0 +1,9 @@
++package dev.fivefold.mixin;
++import net.minecraft.client.gui.screens.inventory.MerchantScreen;
++import org.spongepowered.asm.mixin.Mixin;
++import org.spongepowered.asm.mixin.gen.Accessor;
++@Mixin(MerchantScreen.class)
++public interface MerchantScreenAccess {
++ @Accessor("shopItem") void fivefold$selection(int value);
++ @Accessor("scrollOff") void fivefold$scroll(int value);
++}
+--- a/src/main/java/dev/fivefold/mixin/SharedHandsExtractMixin.java
++++ b/src/main/java/dev/fivefold/mixin/SharedHandsExtractMixin.java
+@@ -15,6 +15,7 @@
+  @Shadow private EntityRenderState extractEntity(Entity entity,float partialTicks){throw new AssertionError();}
+  @Inject(method="extractPlayerState",at=@At("TAIL"))
+  private void fivefold$hands(Camera camera,DeltaTracker delta,float partialTicks,PlayerRenderState state,CallbackInfo ci){
++  dev.fivefold.client.SharedBody.apply();
+   var body=SharedHands.subject(camera);
+   if(body!=null&&extractEntity(body,partialTicks) instanceof AvatarRenderState avatar)SharedHands.extract(body,camera,avatar,state);
+  }
+--- a/src/main/java/dev/fivefold/mixin/SharedHudMixin.java
++++ b/src/main/java/dev/fivefold/mixin/SharedHudMixin.java
+@@ -0,0 +1,39 @@
++package dev.fivefold.mixin;
++import dev.fivefold.client.*;
++import net.minecraft.client.gui.Hud;
++import net.minecraft.client.gui.GuiGraphicsExtractor;
++import net.minecraft.client.DeltaTracker;
++import net.minecraft.client.renderer.RenderPipelines;
++import net.minecraft.client.gui.contextualbar.ContextualBar;
++import net.minecraft.resources.Identifier;
++import org.spongepowered.asm.mixin.*;
++import org.spongepowered.asm.mixin.injection.*;
++import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
++
++/** Reuse vanilla hotbar/hearts/food/air drawing with the synchronized camera player. */
++@Mixin(Hud.class)
++public abstract class SharedHudMixin {
++ @Shadow private void extractItemHotbar(GuiGraphicsExtractor g,DeltaTracker dt){throw new AssertionError();}
++ @Shadow private void extractHealthLevel(GuiGraphicsExtractor g){throw new AssertionError();}
++ @Shadow private void extractArmorLevel(GuiGraphicsExtractor g){throw new AssertionError();}
++ @Shadow private void extractFoodLevel(GuiGraphicsExtractor g){throw new AssertionError();}
++ @Shadow private void extractAirLevel(GuiGraphicsExtractor g){throw new AssertionError();}
++ @Redirect(method="extractEffects",at=@At(value="INVOKE",target="Lnet/minecraft/client/player/LocalPlayer;getActiveEffects()Ljava/util/Collection;"))
++ private java.util.Collection<net.minecraft.world.effect.MobEffectInstance> fivefold$effects(net.minecraft.client.player.LocalPlayer player){return SharedBody.viewing()?SharedBody.effects():player.getActiveEffects();}
++ @Inject(method="extractHotbar",at=@At("HEAD"),cancellable=true)
++ private void fivefold$hotbar(GuiGraphicsExtractor g,DeltaTracker dt,CallbackInfo ci){
++  if(!SharedBody.viewing())return;
++  SharedBody.apply();extractItemHotbar(g,dt);
++  if(ClientState.state.get("survival").getAsBoolean()){
++   extractHealthLevel(g);extractArmorLevel(g);extractFoodLevel(g);extractAirLevel(g);
++   int x=g.guiWidth()/2-91,y=g.guiHeight()-29;
++   g.blitSprite(RenderPipelines.GUI_TEXTURED,Identifier.withDefaultNamespace("hud/experience_bar_background"),x,y,182,5);
++   int progress=(int)(Math.clamp(ClientState.state.get("xpProgress").getAsFloat(),0,1)*183);
++   if(progress>0)g.blitSprite(RenderPipelines.GUI_TEXTURED,Identifier.withDefaultNamespace("hud/experience_bar_progress"),182,5,0,0,x,y,progress,5);
++   int level=ClientState.state.get("xp").getAsInt();if(level>0)ContextualBar.extractExperienceLevel(g,ClientState.mc().font,level);
++  }
++  ci.cancel();
++ }
++ @Inject(method={"extractContextualInfoBarBackground","extractContextualInfoBar","extractExperienceLevel","maybeExtractSpectatorTooltip"},at=@At("HEAD"),cancellable=true)
++ private void fivefold$noSpectatorHud(GuiGraphicsExtractor g,DeltaTracker dt,CallbackInfo ci){if(SharedBody.viewing())ci.cancel();}
++}
+--- a/src/main/java/dev/fivefold/net/Wire.java
++++ b/src/main/java/dev/fivefold/net/Wire.java
+@@ -6,15 +6,16 @@
+ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+ import net.minecraft.resources.Identifier;
+ import net.minecraft.world.item.ItemStack;
+-public record Wire(String json,List<ItemStack> items) implements CustomPacketPayload {
++public record Wire(String json,List<ItemStack> items,net.minecraft.world.item.trading.MerchantOffers offers) implements CustomPacketPayload {
+  public static final Type<Wire> TYPE=new Type<>(Identifier.fromNamespaceAndPath("fivefold","wire"));
+  public static final StreamCodec<RegistryFriendlyByteBuf,Wire> CODEC=new StreamCodec<>() {
+   public Wire decode(RegistryFriendlyByteBuf b){
+    String json=b.readUtf(32767);int n=b.readVarInt();if(n<0||n>512)throw new IllegalArgumentException("slots");
+-   List<ItemStack> items=new ArrayList<>();for(int i=0;i<n;i++)items.add(ItemStack.OPTIONAL_STREAM_CODEC.decode(b));return new Wire(json,items);
++   List<ItemStack> items=new ArrayList<>();for(int i=0;i<n;i++)items.add(ItemStack.OPTIONAL_STREAM_CODEC.decode(b));var offers=b.readBoolean()?net.minecraft.world.item.trading.MerchantOffers.STREAM_CODEC.decode(b):null;return new Wire(json,items,offers);
+   }
+-  public void encode(RegistryFriendlyByteBuf b,Wire w){b.writeUtf(w.json,32767);b.writeVarInt(w.items.size());for(ItemStack s:w.items)ItemStack.OPTIONAL_STREAM_CODEC.encode(b,s);}
++  public void encode(RegistryFriendlyByteBuf b,Wire w){b.writeUtf(w.json,32767);b.writeVarInt(w.items.size());for(ItemStack s:w.items)ItemStack.OPTIONAL_STREAM_CODEC.encode(b,s);b.writeBoolean(w.offers!=null);if(w.offers!=null)net.minecraft.world.item.trading.MerchantOffers.STREAM_CODEC.encode(b,w.offers);}
+  };
++ public Wire(String json,List<ItemStack> items){this(json,items,null);}
+  public Wire(JsonObject data){this(data.toString(),List.of());}
+  public JsonObject data(){return JsonParser.parseString(json).getAsJsonObject();}
+  public Type<Wire> type(){return TYPE;}
+--- a/src/main/java/dev/fivefold/server/FastRelay.java
++++ b/src/main/java/dev/fivefold/server/FastRelay.java
+@@ -57,7 +57,7 @@
+   if(!kind.equals("input")&&!kind.equals("look_batch"))return false;
+   boolean consume=kind.equals("look_batch");
+   Route route=routes.get(connection);
+-  if(route==null||!wire.items().isEmpty())return consume;
++  if(route==null||(!wire.items().isEmpty()||wire.offers()!=null))return consume;
+   var controls=route.controls();
+   synchronized(controls){
+    // A queued packet must not resurrect a revoked route.
+--- a/src/main/java/dev/fivefold/server/Sessions.java
++++ b/src/main/java/dev/fivefold/server/Sessions.java
+@@ -23,6 +23,7 @@
+  static final Random random=new java.security.SecureRandom();
+  static long clock;
+  static class Room {
++  CooperationTasks tasks=new CooperationTasks(random);int tradeSelection,tradeScroll;
+   String code;UUID body;Permissions permissions=new Permissions();
+   Map<UUID,List<String>> bindings=new HashMap<>();
+   Map<UUID,GameType> previousMode=new HashMap<>();InputMixer frames=new InputMixer();
+@@ -38,7 +39,7 @@
+  static void error(ServerPlayer p,String text){JsonObject o=Wire.message("error");o.addProperty("text",text);send(p,o);}
+  public static void receive(ServerPlayer p,Wire w){
+   try {
+-   if(!w.items().isEmpty())return;
++   if(!w.items().isEmpty()||w.offers()!=null)return;
+    JsonObject o=w.data();String kind=o.get("kind").getAsString();Room r=membership.get(p.getUUID());
+    if(kind.equals("create")){
+     if(r!=null)throw new IllegalArgumentException("请先退出当前房间");
+@@ -64,20 +65,21 @@
+      if(o.has("bindings")){
+       var labels=o.getAsJsonArray("bindings");if(labels.size()==Action.values().length){var list=new ArrayList<String>();for(var label:labels){String text=label.getAsString().replaceAll("[\\p{Cntrl}§]","");list.add(text.substring(0,Math.min(24,text.length())));}r.bindings.put(p.getUUID(),List.copyOf(list));}
+      }
++     if(o.has("challengeHeld")&&o.has("task")){r.tasks.input(p.getUUID(),o.get("task").getAsLong(),o.get("challengeHeld").getAsInt());TaskRewards.drain(r);}
+      int beforeOther=r.frames.heldExcept(clock,r.permissions,r.body);
+      int before=combined(r);boolean wasOpen=r.open;
+      int pressed=r.frames.update(p.getUUID(),o.get("held").getAsInt(),clock,r.permissions);var body=player(r,r.body);if(body==null)return;
+      if((pressed&Action.INVENTORY.bit())!=0)r.open=true;
+      if((pressed&Action.CLOSE.bit())!=0){body.closeContainer();r.open=false;}
+-     if((pressed&Action.DROP.bit())!=0){if(r.open){if(menuMatches(r,o)){var point=clickPoint(r,p,o);if(point!=null)drop(r,body,point);}}else body.drop((combined(r)&Action.SPRINT.bit())!=0);}
++     if((pressed&Action.DROP.bit())!=0){if(r.open){if(menuMatches(r,o)){var point=clickPoint(r,p,o);if(point!=null)drop(r,body,point);}}else {body.drop((combined(r)&Action.SPRINT.bit())!=0);int selected=body.getInventory().getSelectedSlot();body.connection.send(new net.minecraft.network.protocol.game.ClientboundSetPlayerInventoryPacket(selected,body.getInventory().getItem(selected).copy()));body.containerMenu.broadcastChanges();}}
+      if(!r.open){if((pressed&Action.ATTACK.bit())!=0)r.attackClicks++;if((pressed&Action.USE.bit())!=0)r.useClicks++;}
+      if(r.open){
+-      var point=menuMatches(r,o)?clickPoint(r,p,o):null;
++      var point=menuMatches(r,o)&&(!(body.containerMenu instanceof net.minecraft.world.inventory.MerchantMenu)||o.has("tradeScroll")&&o.get("tradeScroll").getAsInt()==r.tradeScroll)?clickPoint(r,p,o):null;
+       if((pressed&Action.ATTACK.bit())!=0&&point!=null)click(r,body,0,point);
+       if((pressed&Action.USE.bit())!=0&&point!=null)click(r,body,1,point);
+      }
+      if(InputMixer.needsRelay(before,combined(r),beforeOther,r.frames.heldExcept(clock,r.permissions,r.body))||pressed!=0||wasOpen!=r.open)sendFrame(r,body);
+-     if(wasOpen!=r.open||pressed!=0&&(r.open||wasOpen))state(r);
++     if(wasOpen!=r.open||pressed!=0&&(r.open||wasOpen||(pressed&Action.DROP.bit())!=0))state(r);
+     }
+     case "look" -> {
+      if(!active(r)||!r.open||!r.permissions.owns(p.getUUID(),Action.LOOK)||!menuMatches(r,o))return;
+@@ -86,9 +88,10 @@
+      var cursor=Wire.message("cursor");writeCursor(r,cursor);cursor.addProperty("owner",p.getUUID().toString());cursor.addProperty("ack",o.get("seq").getAsLong());broadcast(r,cursor);
+     }
+     case "scroll" -> {
+-     int d=Integer.signum(o.get("direction").getAsInt());if(d==0||!active(r)||r.open)return;
++     int d=Integer.signum(o.get("direction").getAsInt());if(d==0||!active(r))return;
+      if(!r.permissions.owns(p.getUUID(),d>0?Action.SCROLL_UP:Action.SCROLL_DOWN))return;
+      FastRelay.pulse(r.controls,p.getUUID(),(d>0?Action.SCROLL_UP:Action.SCROLL_DOWN).bit());
++     if(r.open){if(menuMatches(r,o)&&player(r,r.body).containerMenu instanceof net.minecraft.world.inventory.MerchantMenu merchant){r.tradeScroll=Math.clamp(r.tradeScroll-d,0,Math.max(0,merchant.getOffers().size()-7));state(r);}return;}
+      JsonObject msg=Wire.message("scroll");msg.addProperty("direction",d);send(player(r,r.body),msg);
+     }
+    }
+@@ -124,6 +127,11 @@
+   var menu=body.containerMenu;
+   // Fixed logical canvas: positions are normalized so different GUI scales agree.
+   int x=(int)(point.x()*420)-122,y=(int)(point.y()*300)-45;
++  if(button==0&&menu instanceof net.minecraft.world.inventory.MerchantMenu merchant){
++   int offer=dev.fivefold.core.TradeLayout.offerAt(x,y,r.tradeScroll,merchant.getOffers().size());
++   if(offer>=0){r.tradeSelection=offer;merchant.setSelectionHint(offer);merchant.tryMoveItems(offer);merchant.broadcastChanges();return;}
++   if(x>=94&&x<100&&y>=18&&y<158){r.tradeScroll=dev.fivefold.core.TradeLayout.scrollAt(y,merchant.getOffers().size());return;}
++  }
+   int slot=-999;
+   for(var s:menu.slots)if(x>=s.x&&x<s.x+16&&y>=s.y&&y<s.y+16){slot=s.index;break;}
+   if(slot==-999)return; // no accidental outside-window drop; use dedicated Q owner.
+@@ -132,7 +140,7 @@
+  }
+  static void drop(Room r,ServerPlayer body,CursorHistory.Point point){
+   var menu=body.containerMenu;boolean all=(combined(r)&Action.SPRINT.bit())!=0;
+-  if(!menu.getCarried().isEmpty()){menu.clicked(-999,all?0:1,ContainerInput.PICKUP,body);return;}
++  if(!menu.getCarried().isEmpty()){menu.clicked(-999,all?0:1,ContainerInput.PICKUP,body);menu.broadcastChanges();return;}
+   int x=(int)(point.x()*420)-122,y=(int)(point.y()*300)-45;
+   for(var s:menu.slots)if(x>=s.x&&x<s.x+16&&y>=s.y&&y<s.y+16){menu.clicked(s.index,all?1:0,ContainerInput.THROW,body);menu.broadcastChanges();break;}
+  }
+@@ -152,6 +160,7 @@
+      if(follower.getCamera()!=body)follower.setCamera(body);
+     }
+     if(!rooms.containsKey(r.code))continue;
++    TaskRewards.tick(r);
+     r.merged=active(r)?combined(r):0;
+     sendFrame(r,body);
+    }
+@@ -189,7 +198,7 @@
+  static void state(Room r){
+   ServerPlayer body=player(r,r.body);if(body==null)return;
+   if(r.lastOpen!=r.open)resetLook(r);
+-  if(r.lastMenu!=body.containerMenu||r.lastOpen!=r.open){r.menuEpoch++;r.lastMenu=body.containerMenu;r.lastOpen=r.open;r.cursorSerial=0;r.cursorHistory.reset(r.cursorX,r.cursorY);}
++  if(r.lastMenu!=body.containerMenu||r.lastOpen!=r.open){r.tradeSelection=r.tradeScroll=0;r.menuEpoch++;r.lastMenu=body.containerMenu;r.lastOpen=r.open;r.cursorSerial=0;r.cursorHistory.reset(r.cursorX,r.cursorY);}
+   publishControls(r);
+   JsonObject o=Wire.message("state");writeLook(r,o);writeCursor(r,o);
+   boolean inventory=body.containerMenu==body.inventoryMenu;
+@@ -198,13 +207,24 @@
+   o.addProperty("revision",r.permissions.revision());o.addProperty("linked",r.linked);o.addProperty("active",active(r));o.addProperty("open",r.open);
+   o.addProperty("x",r.cursorX);o.addProperty("y",r.cursorY);o.addProperty("health",body.getHealth());o.addProperty("maxHealth",body.getMaxHealth());
+   o.addProperty("food",body.getFoodData().getFoodLevel());o.addProperty("xp",body.experienceLevel);o.addProperty("selected",body.getInventory().getSelectedSlot());
++  o.addProperty("air",body.getAirSupply());o.addProperty("maxAir",body.getMaxAirSupply());o.addProperty("underWater",body.isUnderWater());o.addProperty("xpProgress",body.experienceProgress);o.addProperty("survival",!body.isCreative()&&!body.isSpectator());
++  o.addProperty("usingItem",body.isUsingItem());o.addProperty("useHand",body.getUsedItemHand().name());o.addProperty("useRemaining",body.getUseItemRemainingTicks());o.addProperty("mainArm",body.getMainArm().name());o.addProperty("scoping",body.isScoping());
++  if(body.containerMenu instanceof net.minecraft.world.inventory.MerchantMenu merchant){o.addProperty("tradeSelection",r.tradeSelection);o.addProperty("tradeScroll",r.tradeScroll);o.addProperty("tradeLevel",merchant.getTraderLevel());o.addProperty("tradeXp",merchant.getTraderXp());o.addProperty("tradeProgress",merchant.showProgressBar());o.addProperty("tradeRestock",merchant.canRestock());}
+   JsonArray people=new JsonArray();for(var e:r.permissions.members().entrySet()){
+    JsonObject member=new JsonObject();member.addProperty("id",e.getKey().toString());var p=player(r,e.getKey());member.addProperty("name",p==null?"离线":p.getName().getString());member.addProperty("mask",e.getValue());JsonArray keys=new JsonArray();for(String key:r.bindings.getOrDefault(e.getKey(),List.of()))keys.add(key);member.add("bindings",keys);people.add(member);
+   }o.add("people",people);
+   List<ItemStack> items=new ArrayList<>();for(int i=0;i<9;i++)items.add(body.getInventory().getItem(i).copy());
+-  JsonArray slots=new JsonArray();if(r.open){for(var s:body.containerMenu.slots){if(items.size()>=510)break;JsonObject slot=new JsonObject();slot.addProperty("x",s.x);slot.addProperty("y",s.y);slot.addProperty("id",s.index);slots.add(slot);items.add(s.getItem().copy());}items.add(body.containerMenu.getCarried().copy());}o.add("slots",slots);
++  JsonArray slots=new JsonArray();if(r.open){for(var s:body.containerMenu.slots){if(items.size()>=508)break;JsonObject slot=new JsonObject();slot.addProperty("x",s.x);slot.addProperty("y",s.y);slot.addProperty("id",s.index);slots.add(slot);items.add(s.getItem().copy());}items.add(body.containerMenu.getCarried().copy());}o.add("slots",slots);
++  o.addProperty("equipmentOffset",items.size());items.add(body.getMainHandItem().copy());items.add(body.getOffhandItem().copy());
++  var effectList=new JsonArray();for(var effect:body.getActiveEffects()){var e=new JsonObject();e.addProperty("type",BuiltInRegistries.MOB_EFFECT.getKey(effect.getEffect().value()).toString());e.addProperty("duration",effect.getDuration());e.addProperty("amplifier",effect.getAmplifier());e.addProperty("ambient",effect.isAmbient());e.addProperty("visible",effect.isVisible());e.addProperty("icon",effect.showIcon());effectList.add(e);}o.add("effectList",effectList);
+   StringBuilder effects=new StringBuilder();for(var effect:body.getActiveEffects())effects.append(effect.getEffect().value().getDisplayName().getString()).append(' ').append(effect.getAmplifier()+1).append("  ");o.addProperty("effects",effects.toString());
+-  Wire packet=new Wire(o.toString(),items);for(UUID id:r.permissions.members().keySet()){var p=player(r,id);if(p!=null)PacketDistributor.sendToPlayer(p,packet);}
++  var offers=r.open&&body.containerMenu instanceof net.minecraft.world.inventory.MerchantMenu merchant?merchant.getOffers().copy():null;
++  for(UUID id:r.permissions.members().keySet()){var p=player(r,id);if(p!=null){o.add("task",taskState(r,id));PacketDistributor.sendToPlayer(p,new Wire(o.toString(),items,offers));}}
++ }
++ static JsonObject taskState(Room r,UUID viewer){
++  var t=r.tasks;var o=new JsonObject();o.addProperty("id",t.id());o.addProperty("owner",t.owner()==null?"":t.owner().toString());o.addProperty("action",t.action()==null?-1:t.action().ordinal());o.addProperty("remaining",t.remainingTicks());o.addProperty("done",t.done());o.addProperty("paused",t.paused());o.addProperty("best",t.best());o.addProperty("window",t.windowRemainingTicks());o.addProperty("pool",t.poolHalfPoints());o.addProperty("mine",t.penalty(viewer));
++  var responses=new JsonArray();for(var id:t.current())responses.add(id.toString());o.add("responses",responses);
++  var leaders=new JsonArray();for(var e:t.leaders().entrySet()){var m=new JsonObject();m.addProperty("id",e.getKey().toString());m.addProperty("points",e.getValue());leaders.add(m);}o.add("leaders",leaders);return o;
+  }
+  public static void login(PlayerEvent.PlayerLoggedInEvent e){if(e.getEntity() instanceof ServerPlayer p)Recovery.restore(p);}
+  public static void logout(PlayerEvent.PlayerLoggedOutEvent e){if(e.getEntity() instanceof ServerPlayer p)Recovery.restore(p);Room r=membership.get(e.getEntity().getUUID());if(r!=null)dissolve(r);}
+--- a/src/main/java/dev/fivefold/server/TaskRewards.java
++++ b/src/main/java/dev/fivefold/server/TaskRewards.java
+@@ -0,0 +1,34 @@
++package dev.fivefold.server;
++import dev.fivefold.core.CooperationTasks;
++import net.minecraft.core.registries.BuiltInRegistries;
++import net.minecraft.world.effect.*;
++import net.minecraft.network.chat.Component;
++import java.util.Set;
++
++final class TaskRewards {
++ private static final Set<String> EXCLUDED=Set.of("instant_health","instant_damage","darkness","blindness","mining_fatigue");
++ static void tick(Sessions.Room room){
++  var body=Sessions.player(room,room.body);if(body==null)return;
++  room.tasks.configure(room.permissions.members());
++  room.tasks.tick(Sessions.active(room)&&body.isAlive()&&!room.open);
++  drain(room);
++ }
++ static void drain(Sessions.Room room){
++  CooperationTasks.Outcome outcome;
++  while((outcome=room.tasks.poll())!=null){
++   if(outcome.reward())apply(room,true);
++   if(outcome.punishment())apply(room,false);
++  }
++ }
++ private static void apply(Sessions.Room room,boolean good){
++  var body=Sessions.player(room,room.body);if(body==null)return;
++  var choices=BuiltInRegistries.MOB_EFFECT.listElements().filter(h->{var id=h.key().identifier();return id.getNamespace().equals("minecraft")&&!EXCLUDED.contains(id.getPath())&&!h.value().isInstantaneous()&&h.value().getCategory()==(good?MobEffectCategory.BENEFICIAL:MobEffectCategory.HARMFUL);}).toList();
++  if(choices.isEmpty())return;
++  var effect=choices.get(Sessions.random.nextInt(choices.size()));
++  // Preserve stronger/longer pre-existing effects; standard addEffect merges level-I rewards safely.
++  body.addEffect(new MobEffectInstance(effect,good?1200:200,0));
++  String text=(good?"协作奖励：":"协作惩罚：")+effect.value().getDisplayName().getString()+(good?" I · 60秒":" I · 10秒");
++  for(var id:room.permissions.members().keySet()){var p=Sessions.player(room,id);if(p!=null)p.sendSystemMessage(Component.literal(text),false);}
++ }
++ private TaskRewards(){}
++}
+--- a/src/main/resources/META-INF/neoforge.mods.toml
++++ b/src/main/resources/META-INF/neoforge.mods.toml
+@@ -3,7 +3,7 @@
+ license="MIT"
+ [[mods]]
+ modId="fivefold"
+-version="0.4.1-alpha"
++version="0.5.0-alpha"
+ displayName="Fivefold · 多人一体"
+ description='''2至32人共享一个身体，独立分配移动、鼠标和辅助操作。'''
+ [[dependencies.fivefold]]
+--- a/src/main/resources/fivefold.mixins.json
++++ b/src/main/resources/fivefold.mixins.json
+@@ -1 +1 @@
+-{"required":true,"package":"dev.fivefold.mixin","compatibilityLevel":"JAVA_25","client":["KeyAccess","KeyboardMixin","MouseMixin","LocalPlayerMixin","RecipeBookMixin","ContainerScreenAccess","KeyboardInputMixin","PlayerHandsStateMixin","SharedHandsExtractMixin","SharedHandsRenderMixin"],"injectors":{"defaultRequire":1},"mixins":["MenuAccess","AdvancementsAccess"]}
++{"required": true, "package": "dev.fivefold.mixin", "compatibilityLevel": "JAVA_25", "client": ["KeyAccess", "KeyboardMixin", "MouseMixin", "LocalPlayerMixin", "RecipeBookMixin", "ContainerScreenAccess", "KeyboardInputMixin", "PlayerHandsStateMixin", "SharedHandsExtractMixin", "SharedHandsRenderMixin", "MerchantScreenAccess", "SharedHudMixin"], "injectors": {"defaultRequire": 1}, "mixins": ["MenuAccess", "AdvancementsAccess"]}--- a/src/test/java/dev/fivefold/core/CooperationTasksTest.java
++++ b/src/test/java/dev/fivefold/core/CooperationTasksTest.java
+@@ -0,0 +1,34 @@
++package dev.fivefold.core;
++import org.junit.jupiter.api.Test;
++import static org.junit.jupiter.api.Assertions.*;
++import java.util.*;
++
++class CooperationTasksTest {
++ static final List<UUID> PLAYERS=java.util.stream.IntStream.range(0,5).mapToObj(i->new UUID(0,i+1)).toList();
++ static Map<UUID,Integer> members(int n){var m=new LinkedHashMap<UUID,Integer>();for(int i=0;i<n;i++)m.put(PLAYERS.get(i),Action.FORWARD.bit());return m;}
++ static CooperationTasks game(int n){var g=new CooperationTasks(new Random(4));g.configure(members(n));g.tick(true);return g;}
++ static void ticks(CooperationTasks g,int n){for(int i=0;i<n;i++)g.tick(true);}
++ static void press(CooperationTasks g,UUID p){g.input(p,g.id(),0);g.input(p,g.id(),g.action().bit());}
++ static List<UUID> others(CooperationTasks g){return PLAYERS.stream().filter(p->!p.equals(g.owner())).toList();}
++ static void finish(CooperationTasks g){long id=g.id();while(g.id()==id)g.tick(true);}
++ @Test void tapsWithinThreeSecondsWinWithoutHolding(){var g=game(5);press(g,g.owner());for(var p:others(g)){ticks(g,10);press(g,p);}assertTrue(g.done());var result=g.poll();assertEquals(2,result.rewardHalfPoints());assertNull(g.poll());}
++ @Test void expiredPressDropsOutButCanReenter(){var g=game(5);UUID owner=g.owner();press(g,owner);ticks(g,61);for(var p:others(g))press(g,p);assertFalse(g.done());assertEquals(1,g.best());press(g,owner);assertTrue(g.done());}
++ @Test void nonOwnerCannotCompleteOrEarnPartial(){var g=game(5);for(var p:others(g))press(g,p);finish(g);var r=g.poll();assertEquals(0,r.rewardHalfPoints());assertEquals(1,g.penalty(r.owner()));}
++ @Test void threeAndFourResponsesKeepSliding(){var g=game(5);var peers=others(g);press(g,g.owner());for(int i=0;i<3;i++)press(g,peers.get(i));ticks(g,61);for(var p:PLAYERS)press(g,p);assertTrue(g.done());assertEquals(2,g.poll().rewardHalfPoints());}
++ @Test void partialBestSurvivesExpiryAndOnlySettlesAtDeadline(){var g=game(5);press(g,g.owner());press(g,others(g).getFirst());assertNull(g.poll());ticks(g,80);assertTrue(g.current().isEmpty());assertEquals(2,g.best());finish(g);assertEquals(1,g.poll().rewardHalfPoints());}
++ @Test void oneOutOfFiveIsPenalty(){var g=game(5);UUID owner=g.owner();press(g,owner);finish(g);assertEquals(0,g.poll().rewardHalfPoints());assertEquals(1,g.penalty(owner));}
++ @Test void exactlyQuarterGetsHalfPoint(){var g=game(4);press(g,g.owner());finish(g);assertEquals(1,g.poll().rewardHalfPoints());}
++ @Test void repeatedPacketsOrHeldKeyCannotRenewResponse(){var g=game(5);UUID owner=g.owner();g.input(owner,g.id(),g.action().bit());for(int i=0;i<80;i++){g.tick(true);g.input(owner,g.id(),g.action().bit());}assertFalse(g.current().contains(owner));}
++ @Test void wrongTaskAndNonMemberCannotScore(){var g=game(5);g.input(g.owner(),g.id()-1,Action.FORWARD.bit());g.input(new UUID(8,8),g.id(),Action.FORWARD.bit());assertEquals(0,g.best());assertTrue(g.current().isEmpty());}
++ @Test void pausedClockAndResponsesCannotScore(){var g=game(5);long remaining=g.remainingTicks();for(int i=0;i<400;i++)g.tick(false);for(var p:PLAYERS)press(g,p);assertEquals(remaining,g.remainingTicks());assertEquals(0,g.best());assertNull(g.poll());}
++ @Test void allFiveOwnersSelectedBeforeRepeat(){var g=game(5);Set<UUID> owners=new HashSet<>();for(int i=0;i<5;i++){assertTrue(owners.add(g.owner()));finish(g);g.poll();}assertEquals(5,owners.size());}
++ @Test void inventoryAndMouseMotionNeverTasks(){var g=new CooperationTasks(new Random(3));g.configure(Map.of(PLAYERS.get(0),Action.INVENTORY.bit()|Action.LOOK.bit()|Action.SCROLL_UP.bit()|Action.CLOSE.bit()|Action.DROP.bit(),PLAYERS.get(1),Action.JUMP.bit()));g.tick(true);assertEquals(PLAYERS.get(1),g.owner());assertEquals(Action.JUMP,g.action());}
++ @Test void rewardAtFourPointsClearsPoolAndDoesNotRepeat(){var g=game(5);for(int n=0;n<4;n++){for(var p:PLAYERS)press(g,p);var r=g.poll();assertEquals(n==3,r.reward());assertNull(g.poll());assertEquals(n==3?0:(n+1)*2,g.poolHalfPoints());finish(g);} }
++ @Test void penaltyTriggersAtFourSubtractsTwoAndSuccessReducesOnlyOwner(){var g=game(5);boolean punished=false;for(int i=0;i<20;i++){UUID owner=g.owner();int before=g.penalty(owner);finish(g);var r=g.poll();if(before==3){assertTrue(r.punishment());assertEquals(2,g.penalty(owner));punished=true;}else assertFalse(r.punishment());}assertTrue(punished);UUID owner=g.owner();var before=new HashMap<UUID,Integer>();for(var p:PLAYERS)before.put(p,g.penalty(p));for(var p:PLAYERS)press(g,p);g.poll();for(var p:PLAYERS)assertEquals(p.equals(owner)?Math.max(0,before.get(p)-1):before.get(p),g.penalty(p));}
++ @Test void successNeverCreatesNegativePenalty(){var g=game(5);for(var p:PLAYERS)press(g,p);for(var p:PLAYERS)assertEquals(0,g.penalty(p));}
++ @Test void heldKeyDoesNotAutomaticallyRespondToNextRound(){var g=game(5);for(var p:PLAYERS)g.input(p,g.id(),Action.FORWARD.bit());g.poll();finish(g);for(var p:PLAYERS)g.input(p,g.id(),Action.FORWARD.bit());assertEquals(0,g.best());}
++ @Test void membershipChangeCancelsWithoutPunishment(){var g=game(5);long id=g.id();g.configure(Map.of(PLAYERS.get(0),Action.JUMP.bit(),PLAYERS.get(1),Action.USE.bit()));g.tick(true);assertTrue(g.id()>id);assertNull(g.poll());assertTrue(g.leaders().isEmpty());}
++ @Test void rewardOverflowIsClearedInsteadOfCarried(){var g=game(5);for(int n=0;n<7;n++){press(g,g.owner());press(g,others(g).getFirst());finish(g);assertFalse(g.poll().reward());}assertEquals(7,g.poolHalfPoints());for(var p:PLAYERS)press(g,p);assertTrue(g.poll().reward());assertEquals(0,g.poolHalfPoints());}
++ @Test void responsesAtThreeSecondBoundaryCountButOlderOnesDoNot(){var g=game(5);UUID owner=g.owner();press(g,owner);ticks(g,60);assertTrue(g.current().contains(owner));ticks(g,1);assertFalse(g.current().contains(owner));}
++ @Test void reassignmentCannotEraseCurrentTaskOrItsBestResult(){var g=game(5);long id=g.id();UUID owner=g.owner();press(g,owner);press(g,others(g).getFirst());var changed=new LinkedHashMap<>(members(5));changed.put(owner,Action.JUMP.bit());g.configure(changed);assertEquals(id,g.id());assertEquals(Action.FORWARD,g.action());assertEquals(2,g.best());finish(g);assertEquals(1,g.poll().rewardHalfPoints());}
++}
+--- a/src/test/java/dev/fivefold/core/TradeLayoutTest.java
++++ b/src/test/java/dev/fivefold/core/TradeLayoutTest.java
+@@ -0,0 +1,8 @@
++package dev.fivefold.core;
++import org.junit.jupiter.api.Test;
++import static org.junit.jupiter.api.Assertions.*;
++class TradeLayoutTest {
++ @Test void offerRowsRespectNativeCoordinatesAndScroll(){assertEquals(0,TradeLayout.offerAt(5,18,0,12));assertEquals(6,TradeLayout.offerAt(92,157,0,12));assertEquals(10,TradeLayout.offerAt(20,118,5,12));}
++ @Test void outsideAndUnlistedOffersCannotSelect(){assertEquals(-1,TradeLayout.offerAt(136,37,0,12));assertEquals(-1,TradeLayout.offerAt(10,158,0,12));assertEquals(-1,TradeLayout.offerAt(10,98,0,4));}
++ @Test void scrollbarClampsToAvailablePages(){assertEquals(0,TradeLayout.scrollAt(18,15));assertEquals(8,TradeLayout.scrollAt(157,15));assertEquals(0,TradeLayout.scrollAt(157,4));}
++}
+--- a/tools/build_cached.py
++++ b/tools/build_cached.py
+@@ -16,9 +16,9 @@
+ run([a.jdk/'bin/javac','-proc:none','--release','25','-encoding','UTF-8','-cp',cp,'-d',classes,*sorted((root/'src/main/java').rglob('*.java'))])
+ run([a.jdk/'bin/javac','-proc:none','--release','25','-encoding','UTF-8','-cp',str(classes)+os.pathsep+str(a.junit),'-d',tests,*sorted((root/'src/test/java').rglob('*.java'))])
+ run([a.jdk/'bin/java','-jar',a.junit,'execute','--class-path',str(classes)+os.pathsep+str(tests),'--select-package','dev.fivefold.core','--reports-dir',build/'test-results','--disable-ansi-colors'])
+-jar=build/'libs/fivefold-0.4.1-alpha.jar'; jar.parent.mkdir(exist_ok=True)
++jar=build/'libs/fivefold-0.5.0-alpha.jar'; jar.parent.mkdir(exist_ok=True)
+ with zipfile.ZipFile(jar,'w',zipfile.ZIP_DEFLATED) as z:
+- z.writestr('META-INF/MANIFEST.MF','Manifest-Version: 1.0\nImplementation-Version: 0.4.1-alpha\n\n')
++ z.writestr('META-INF/MANIFEST.MF','Manifest-Version: 1.0\nImplementation-Version: 0.5.0-alpha\n\n')
+  for base in [classes,root/'src/main/resources']:
+   for f in sorted(base.rglob('*')):
+    if f.is_file(): z.write(f,f.relative_to(base).as_posix())
+--- a/tools/check_mixin_targets.py
++++ b/tools/check_mixin_targets.py
+@@ -0,0 +1,21 @@
++"""Check changed injection targets against the exact API bytecode (not a game/Mixin launch)."""
++from pathlib import Path
++import argparse,subprocess
++p=argparse.ArgumentParser();p.add_argument('--jdk',required=True,type=Path);p.add_argument('--api',required=True,type=Path);a=p.parse_args()
++def code(name):
++ return subprocess.check_output([str(a.jdk/'bin/javap'),'-p','-c','-s','-classpath',str(a.api),name],text=True)
++checks={
++ 'net.minecraft.client.gui.Hud':['void extractHotbar(', 'void extractItemHotbar(', 'void extractHealthLevel(', 'void extractArmorLevel(', 'void extractFoodLevel(', 'void extractAirLevel(', 'void extractContextualInfoBarBackground(', 'void extractContextualInfoBar(', 'void extractExperienceLevel(', 'void maybeExtractSpectatorTooltip(', 'net/minecraft/client/player/LocalPlayer.getActiveEffects:()Ljava/util/Collection;'],
++ 'net.minecraft.client.gui.screens.inventory.MerchantScreen':['private int shopItem;', 'private int scrollOff;'],
++ 'net.minecraft.client.renderer.extract.LevelExtractor':['void extractPlayerState(net.minecraft.client.Camera, net.minecraft.client.DeltaTracker, float, net.minecraft.client.renderer.state.level.PlayerRenderState);', 'net.minecraft.client.renderer.entity.state.EntityRenderState extractEntity(net.minecraft.world.entity.Entity, float);'],
++ 'net.minecraft.client.renderer.GameRenderer':['void renderItemInHand(net.minecraft.client.renderer.state.level.CameraRenderState, net.minecraft.client.renderer.state.level.PlayerRenderState, com.mojang.renderpearl.api.textures.GpuTextureView);', 'net/minecraft/client/multiplayer/MultiPlayerGameMode.getPlayerMode:()Lnet/minecraft/world/level/GameType;'],
++ 'net.minecraft.client.renderer.state.level.PlayerRenderState':['void reset();'],
++}
++count=0
++for name,needles in checks.items():
++ text=code(name)
++ for needle in needles:
++  assert needle in text,(name,needle)
++  count+=1
++ print(name,':',len(needles),'targets found')
++print(f'{count} bytecode target checks passed; runtime transformation/rendering not tested.')

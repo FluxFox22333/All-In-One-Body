@@ -1,0 +1,20 @@
+plugins {
+ id 'java-library'
+ id 'net.neoforged.moddev' version '2.0.148'
+}
+version = '0.5.0-alpha'
+group = 'dev.fivefold'
+base { archivesName = 'fivefold' }
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+neoForge {
+ version = '26.3.0.39-beta'
+ runs {
+  client { client(); gameDirectory = project.file('run-client') }
+  server { server(); programArgument '--nogui' }
+ }
+ mods { fivefold { sourceSet(sourceSets.main) } }
+}
+repositories { mavenCentral() }
+dependencies { testImplementation 'org.junit.jupiter:junit-jupiter:5.12.2'; testRuntimeOnly 'org.junit.platform:junit-platform-launcher' }
+test { useJUnitPlatform() }
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }

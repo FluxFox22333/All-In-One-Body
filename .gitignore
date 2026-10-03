@@ -1,0 +1,32 @@
+# Build outputs and local game data
+.gradle/
+build/
+run/
+run-client/
+run-server/
+world/
+logs/
+crash-reports/
+*.log
+
+# Original archives and machine-specific verification reports
+/local-archives/
+/verification/
+
+# Editor and operating system files
+.idea/
+.vscode/
+.DS_Store
+._*
+*.swp
+*.swo
+*~
+__pycache__/
+*.pyc
+
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
